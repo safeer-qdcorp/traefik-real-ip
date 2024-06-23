@@ -1,13 +1,27 @@
-# Traefik Real IP
+# Traefik Real IP Plugin
 
-If Traefik is behind a load balancer, it won't be able to get the Real IP from the external client by checking the remote IP address.
+The `traefik_real_ip` plugin for Traefik enhances the ability to extract and set the real client IP address from the `X-Forwarded-For` header. This is particularly useful when Traefik is deployed behind a load balancer or proxy where the actual client IP address can be obscured.
 
-This plugin solves this issue by overwriting the X-Real-Ip with an IP from the X-Forwarded-For or Cf-Connecting-Ip (if from Cloudflare) header. The real IP will be the first one that is not included in any of the CIDRs passed as the ExcludedNets parameter. The evaluation of the X-Forwarded-For or Cf-Connecting-Ip (if from Cloudflare) IPs will go from the last to the first one.
+## Features
 
-#
+- Extracts the real client IP address from the `X-Forwarded-For` header.
+- Configurable depth (`forwardedForDepth`) for selecting which IP from `X-Forwarded-For` to use as the real IP.
+- Sets the `X-Real-Ip` header with the determined real client IP address.
+- Mitigates IP spoofing by ensuring the `X-Real-Ip` header reflects the actual client IP (`REAL_IP`).
+
 ## Configuration
 
-### Static
+### Configuration Options
+
+The plugin supports the following configuration option:
+
+| Option             | Description |
+| ------------------ | ----------- |
+| `forwardedForDepth`| Specifies the depth to look into the `X-Forwarded-For` header. Default is `1`, meaning it uses the last IP unless configured otherwise. |
+
+### Example Configuration
+
+#### Static Configuration
 
 ```yaml
 pilot:
@@ -20,43 +34,27 @@ experimental:
       version: main
 ```
 
-### Dynamic configuration
+#### Dynamic Configuration (Middleware)
 
 ```yaml
 http:
-  routers:
-    my-router:
-      rule: Path(`/whoami`)
-      service: service-whoami
-      entryPoints:
-        - http
-      middlewares:
-        - traefik-real-ip
-
-  services:
-   service-whoami:
-      loadBalancer:
-        servers:
-          - url: http://127.0.0.1:5000
-  
   middlewares:
     traefik-real-ip:
       plugin:
         traefik-real-ip:
-          excludednets:
-            - "1.1.1.1/24"
+          forwardedForDepth: 2
 ```
 
-### Kubernetes configuration
+### Deployment Configuration
+
+#### Kubernetes Deployment Example
 
 ```yaml
-kind: Deployment
 apiVersion: apps/v1
+kind: Deployment
 metadata:
   namespace: default
   name: traefik
-  labels:
-    app: traefik
 spec:
   replicas: 1
   selector:
@@ -67,24 +65,18 @@ spec:
       labels:
         app: traefik
     spec:
-      terminationGracePeriodSeconds: 60
-      serviceAccountName: traefik-ingress-controller
       containers:
         - name: traefik
           image: traefik:v2.4
           args:
             - --api.insecure
-            - --accesslog
             - --entrypoints.web.Address=:80
             - --providers.kubernetescrd
-            - --pilot.token={YOUR_PILOT_TOKEN}
             - --experimental.plugins.traefik-real-ip.modulename=github.com/safeer-qdcorp/traefik-real-ip
             - --experimental.plugins.traefik-real-ip.version=main
           ports:
             - name: web
               containerPort: 80
-            - name: admin
-              containerPort: 8080
           resources:
             requests:
               cpu: 300m
@@ -92,6 +84,7 @@ spec:
               cpu: 500m
 
 ---
+
 apiVersion: traefik.containo.us/v1alpha1
 kind: Middleware
 metadata:
@@ -99,10 +92,10 @@ metadata:
 spec:
   plugin:
     traefik-real-ip:
-      excludednets:
-        - "1.1.1.1/24"
+      forwardedForDepth: 2
 
 ---
+
 apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute
 metadata:
@@ -113,7 +106,7 @@ spec:
     - web
   routes:
     - kind: Rule
-      match: Host(`domain.ltd`) && PathPrefix(`/`)
+      match: Host(`example.com`) && PathPrefix(`/`)
       services:
         - name: example-service
           port: 80
@@ -121,13 +114,31 @@ spec:
         - name: traefik-real-ip
 ```
 
-#
-## Configuration documentation
+### Configuration Documentation
 
-Supported configurations per body
+This plugin ensures that Traefik accurately determines the real client IP address by evaluating the `X-Forwarded-For` header. Adjust the `forwardedForDepth` parameter to suit your environment and security requirements.
 
-| Setting           | Allowed values      | Required    | Description |
-| :--               | :--                 | :--         | :--         |
-| excludednets      | []string            | No          | IP or IP range to exclude forward IP |
+### Preventing IP Spoofing
 
-#
+To prevent IP spoofing attacks, configure the `forwardedForDepth` parameter appropriately. For instance, with `forwardedForDepth: 2`, the plugin ensures that the `X-Real-Ip` header always reflects the actual client IP (`REAL_IP`) from the `X-Forwarded-For` header.
+
+### Example Usage
+
+When sending a request with a custom `X-Forwarded-For` header:
+
+```bash
+curl -X POST https://example.com/whoami -H "X-Forwarded-For: 10.0.0.1, REAL_IP, CF_IP, LB_IP, PROXY_IP"
+```
+
+Assuming `forwardedForDepth: 2`, the resulting headers would include:
+
+```
+Hostname: <hostname>
+IP: <actual_real_ip>
+...
+X-Real-Ip: <actual_real_ip>
+```
+
+This demonstrates how the plugin accurately sets the `X-Real-Ip` header based on the `X-Forwarded-For` header, ensuring correct identification of the client IP even when Traefik is behind a proxy or load balancer.
+
+---
