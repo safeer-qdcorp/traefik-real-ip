@@ -5,47 +5,39 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"strconv"
 )
 
 const (
-	xRealIP        = "X-Real-Ip"
-	xForwardedFor  = "X-Forwarded-For"
-	cfConnectingIP = "Cf-Connecting-Ip"
+	xRealIP       = "X-Real-Ip"
+	xForwardedFor = "X-Forwarded-For"
 )
 
 // Config the plugin configuration.
 type Config struct {
-	ExcludedNets []string `json:"excludednets,omitempty" toml:"excludednets,omitempty" yaml:"excludednets,omitempty"`
+	ForwardedForDepth int `json:"forwardedForDepth,omitempty" toml:"forwardedForDepth,omitempty" yaml:"forwardedForDepth,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
 	return &Config{
-		ExcludedNets: []string{},
+		ForwardedForDepth: 1, // Default depth if not provided
 	}
 }
 
-// RealIPOverWriter is a plugin that blocks incoming requests depending on their source IP.
+// RealIPOverWriter is a plugin that extracts real IP from X-Forwarded-For header.
 type RealIPOverWriter struct {
-	next         http.Handler
-	name         string
-	ExcludedNets []*net.IPNet
+	next             http.Handler
+	name             string
+	ForwardedForDepth int
 }
 
-// New created a new Demo plugin.
+// New creates a new RealIPOverWriter plugin.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	ipOverWriter := &RealIPOverWriter{
-		next: next,
-		name: name,
-	}
-
-	for _, v := range config.ExcludedNets {
-		_, excludedNet, err := net.ParseCIDR(v)
-		if err != nil {
-			return nil, err
-		}
-
-		ipOverWriter.ExcludedNets = append(ipOverWriter.ExcludedNets, excludedNet)
+		next:             next,
+		name:             name,
+		ForwardedForDepth: config.ForwardedForDepth,
 	}
 
 	return ipOverWriter, nil
@@ -54,44 +46,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	forwardedIPs := strings.Split(req.Header.Get(xForwardedFor), ",")
 
-	// TODO - Implement a max for the iterations
-	var realIP string
-	for i := len(forwardedIPs) - 1; i >= 0; i-- {
-		// TODO - Check if TrimSpace is necessary
-		trimmedIP := strings.TrimSpace(forwardedIPs[i])
-		if !r.excludedIP(trimmedIP) {
-			realIP = trimmedIP
-			break
-		}
+	// Determine the index to use based on ForwardedForDepth
+	index := len(forwardedIPs) - r.ForwardedForDepth
+	if index < 0 {
+		index = 0
 	}
 
-        // Use `Cf-Connecting-Ip` when available
-        if req.Header.Get(cfConnectingIP) != "" {
-                realIP = req.Header.Get(cfConnectingIP)
-                req.Header.Set(xForwardedFor, realIP)
-                req.Header.Set(xRealIP, realIP)
-        }
-
-        if req.Header.Get(xRealIP) == "" {
-                realIP = req.RemoteAddr
-                req.Header.Set(xRealIP, realIP)
-        }
+	trimmedIP := strings.TrimSpace(forwardedIPs[index])
+	if trimmedIP != "" {
+		req.Header.Set(xRealIP, trimmedIP)
+	}
 
 	r.next.ServeHTTP(rw, req)
-}
-
-func (r *RealIPOverWriter) excludedIP(s string) bool {
-	ip := net.ParseIP(s)
-	if ip == nil {
-		// log the error and fallback to the default value (check if true is ok)
-		return true
-	}
-
-	for _, network := range r.ExcludedNets {
-		if network.Contains(ip) {
-			return true
-		}
-	}
-
-	return false
 }

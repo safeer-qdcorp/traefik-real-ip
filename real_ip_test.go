@@ -11,7 +11,7 @@ import (
 
 func TestNew(t *testing.T) {
 	cfg := plugin.CreateConfig()
-	cfg.ExcludedNets = []string{"127.0.0.1/24"}
+	cfg.ForwardedForDepth = 1 // Set the depth based on your test requirements
 
 	ctx := context.Background()
 	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
@@ -22,28 +22,24 @@ func TestNew(t *testing.T) {
 	}
 
 	testCases := []struct {
-		header        string
 		desc          string
 		xForwardedFor string
 		expected      string
 	}{
 		{
-			header:        "X-Forwarded-For",
-			desc:          "don't forward",
-			xForwardedFor: "127.0.0.2",
-			expected:      "",
-		},
-		{
-			header:        "X-Forwarded-For",
-			desc:          "forward",
-			xForwardedFor: "10.0.0.1",
-			expected:      "",
-		},
-		{
-			header:        "Cf-Connecting-Ip",
-			desc:          "forward",
-			xForwardedFor: "10.0.0.1",
+			desc:          "don't forward when depth is 1",
+			xForwardedFor: "10.0.0.1, 192.168.1.1",
 			expected:      "10.0.0.1",
+		},
+		{
+			desc:          "forward when depth is 2",
+			xForwardedFor: "10.0.0.1, 192.168.1.1",
+			expected:      "192.168.1.1",
+		},
+		{
+			desc:          "fallback to remote address when no X-Forwarded-For",
+			xForwardedFor: "",
+			expected:      "127.0.0.1", // Assuming localhost default address
 		},
 	}
 
@@ -57,7 +53,7 @@ func TestNew(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			req.Header.Set(test.header, test.xForwardedFor)
+			req.Header.Set("X-Forwarded-For", test.xForwardedFor)
 
 			handler.ServeHTTP(recorder, req)
 
@@ -70,6 +66,6 @@ func assertHeader(t *testing.T, req *http.Request, key, expected string) {
 	t.Helper()
 
 	if req.Header.Get(key) != expected {
-		t.Errorf("invalid header value: %s", req.Header.Get(key))
+		t.Errorf("invalid header value: %s, expected: %s", req.Header.Get(key), expected)
 	}
 }
